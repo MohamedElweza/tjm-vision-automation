@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tjm_automation.grounding import _select_best_label
+from tjm_automation.grounding import _is_code_like, _select_best_label
 from tjm_automation.ocr_engine import TextBox
 
 
@@ -33,3 +33,28 @@ def test_textbox_center_and_size() -> None:
     assert box.center == (30, 35)
     assert box.width == 40
     assert box.height == 30
+
+
+def test_code_like_detects_identifiers_and_punctuation() -> None:
+    assert _is_code_like("notepad_via_icon")
+    assert _is_code_like("self.detect(img)")
+    assert _is_code_like("a = b")
+    assert _is_code_like("path/to/file")
+    assert _is_code_like("C:\\Users\\moahm")
+
+
+def test_code_like_passes_real_labels() -> None:
+    assert not _is_code_like("Notepad")
+    assert not _is_code_like("Recycle Bin")
+    assert not _is_code_like("Microsoft Edge")
+    assert not _is_code_like("Google Chrome")
+
+
+def test_substring_prefers_non_code_over_code_when_no_exact_match() -> None:
+    candidates = [
+        _tb("notepad_via_icon", conf=0.97),
+        _tb("My Notepad Folder", conf=0.80),
+    ]
+    best = _select_best_label(candidates, "Notepad", prefer_exact=True)
+    assert best is not None
+    assert best.text == "My Notepad Folder"

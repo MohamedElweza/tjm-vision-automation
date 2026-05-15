@@ -44,19 +44,42 @@ class GroundingResult:
     reason: str = ""
 
 
+def _is_code_like(text: str) -> bool:
+    """Heuristic: True for tokens that look like programming identifiers, not
+    desktop-icon labels. Used to deprioritise OCR hits inside editors/terminals
+    that happen to contain our query as a substring (e.g. `notepad_via_icon`).
+    """
+    t = text.strip()
+    if "_" in t and any(c.isalpha() for c in t):
+        return True
+    if any(ch in t for ch in ("(", ")", "{", "}", ";", "=", "->", "::", "/", "\\")):
+        return True
+    return False
+
+
 def _select_best_label(
     matches: List[TextBox], query: str, prefer_exact: bool = True
 ) -> Optional[TextBox]:
-    """Pick the best matching label, preferring exact (case-insensitive) matches.
+    """Pick the best matching label.
 
-    This is how we discriminate Notepad from Notepad++.
+    Selection rules, in order:
+      1. Exact (case-insensitive) text match wins, even at lower confidence.
+         This discriminates "Notepad" from "Notepad++" and from longer strings
+         that happen to contain "notepad".
+      2. If no exact match, prefer non-code-like candidates so we don't lock
+         onto identifiers in editor/terminal windows.
+      3. Among the remaining pool, take the highest-confidence box.
     """
     if not matches:
         return None
 
     query_norm = query.strip().lower()
     exact = [m for m in matches if m.text.strip().lower() == query_norm]
-    pool = exact if (prefer_exact and exact) else matches
+    if prefer_exact and exact:
+        return max(exact, key=lambda m: m.confidence)
+
+    non_code = [m for m in matches if not _is_code_like(m.text)]
+    pool = non_code if non_code else matches
     return max(pool, key=lambda m: m.confidence)
 
 

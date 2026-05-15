@@ -25,7 +25,7 @@ from .notepad import (
     write_text_in_notepad,
 )
 from .popup_handler import dismiss_popups
-from .screen import capture_desktop, save_screenshot
+from .screen import capture_desktop, save_screenshot, show_desktop
 
 console = Console()
 logger = logging.getLogger("tjm")
@@ -75,6 +75,9 @@ def attempt_ground(label: str, template: Optional[str], attempts: int = 3,
     last: Optional[GroundingResult] = None
     for i in range(1, attempts + 1):
         logger.info("Grounding '%s' (attempt %d/%d)...", label, i, attempts)
+        # Expose the real desktop so OCR can't latch onto text inside an editor,
+        # terminal, or browser that happens to contain our label as a substring.
+        show_desktop()
         image = capture_desktop()
         if save_debug:
             save_screenshot(image, Path("debug") / f"attempt_{i}.png")

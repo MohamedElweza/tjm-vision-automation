@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 
 from .grounding import annotate_image, ground_icon
-from .screen import capture_desktop
+from .screen import capture_desktop, restore_windows, show_desktop
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,13 +35,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--countdown",
         type=int,
-        default=3,
-        help="Seconds to wait before grabbing the screenshot (lets you switch focus).",
+        default=2,
+        help="Seconds to wait before grabbing the screenshot.",
+    )
+    parser.add_argument(
+        "--no-show-desktop",
+        action="store_true",
+        help="Don't minimize windows before capture (use to ground a popup/dialog).",
+    )
+    parser.add_argument(
+        "--no-restore",
+        action="store_true",
+        help="Don't restore windows after capture.",
     )
     args = parser.parse_args(argv)
 
+    if not args.no_show_desktop:
+        print("Minimizing windows to expose the real desktop...")
+        show_desktop()
+
     if args.countdown > 0:
-        print(f"Capturing in {args.countdown}s... switch to your desktop now.")
+        print(f"Capturing in {args.countdown}s...")
         for i in range(args.countdown, 0, -1):
             print(f"  {i}...")
             time.sleep(1)
@@ -66,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_path), annotated)
     print(f"Wrote {out_path}")
+
+    if not args.no_show_desktop and not args.no_restore:
+        restore_windows()
 
     return 0 if result.found else 2
 
