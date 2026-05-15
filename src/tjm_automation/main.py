@@ -125,28 +125,36 @@ def launch_notepad_via_icon(label: str, template: Optional[str],
     return True
 
 
-def process_one_post(post: Post, out_dir: Path) -> bool:
-    """Write a single post into Notepad and save it."""
+def process_one_post(post: Post, out_dir: Path, max_attempts: int = 2) -> bool:
+    """Write a single post into Notepad and save it, with retry on save failure."""
     text = format_post(post)
     file_path = out_dir / f"post_{post.id}.txt"
 
-    if not is_notepad_running():
-        logger.error("Notepad not running when trying to write post %d.", post.id)
-        return False
+    for attempt in range(1, max_attempts + 1):
+        if not is_notepad_running():
+            logger.error("Notepad not running when trying to write post %d.", post.id)
+            return False
 
-    write_text_in_notepad(text)
-    save_as(file_path, overwrite=True)
+        if attempt > 1:
+            # Dismiss any stuck dialog left over from a failed save before retrying.
+            pyautogui.press("escape")
+            time.sleep(0.4)
 
-    # Poll for the saved file. The Save As dialog can take 1-3s to close
-    # and write the file, especially on slower disks / OneDrive folders.
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        if file_path.exists() and file_path.stat().st_size > 0:
-            logger.info("Saved %s (%d bytes).", file_path.name, file_path.stat().st_size)
-            return True
-        time.sleep(0.25)
+        write_text_in_notepad(text)
+        save_as(file_path, overwrite=True)
 
-    logger.error("Save failed for %s (file missing or empty after 5s).", file_path)
+        # Poll for the saved file. OneDrive-backed paths can be slow to flush.
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            if file_path.exists() and file_path.stat().st_size > 0:
+                logger.info("Saved %s (%d bytes).", file_path.name, file_path.stat().st_size)
+                return True
+            time.sleep(0.25)
+
+        if attempt < max_attempts:
+            logger.warning("Save attempt %d failed for %s; retrying.", attempt, file_path.name)
+
+    logger.error("Save failed for %s after %d attempts.", file_path, max_attempts)
     return False
 
 
