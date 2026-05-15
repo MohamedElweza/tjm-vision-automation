@@ -41,6 +41,24 @@ def setup_logging(verbose: bool) -> None:
 
 
 def desktop_dir() -> Path:
+    """Return the Windows Shell "Desktop" folder, respecting OneDrive redirection.
+
+    Falls back to %USERPROFILE%\\Desktop only if the Shell API call fails.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        CSIDL_DESKTOPDIRECTORY = 0x10
+        SHGFP_TYPE_CURRENT = 0
+        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+        ctypes.windll.shell32.SHGetFolderPathW(
+            None, CSIDL_DESKTOPDIRECTORY, None, SHGFP_TYPE_CURRENT, buf
+        )
+        if buf.value:
+            return Path(buf.value)
+    except Exception:
+        pass
     user_profile = os.environ.get("USERPROFILE") or str(Path.home())
     return Path(user_profile) / "Desktop"
 
