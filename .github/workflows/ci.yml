@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint-and-test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync dependencies (with dev/test extras)
+        run: uv sync --all-extras --dev
+
+      - name: Compile-check all source files
+        shell: pwsh
+        run: |
+          uv run python -c "import compileall, sys; sys.exit(0 if compileall.compile_dir('src', quiet=1) else 1)"
+
+      - name: Run pytest
+        run: uv run pytest -q
+
+      - name: Verify entry points are registered
+        shell: pwsh
+        run: |
+          uv run tjm-run --help | Out-Null
+          uv run tjm-demo --help | Out-Null
+          uv run tjm-capture-template --help | Out-Null

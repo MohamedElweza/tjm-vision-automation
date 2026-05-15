@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.python-version.local
+uv.lock
+
+# Outputs
+screenshots/*.png
+!screenshots/.gitkeep
+assets/*.png
+!assets/.gitkeep
+debug/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
