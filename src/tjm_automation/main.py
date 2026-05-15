@@ -19,6 +19,7 @@ from .grounding import GroundingResult, ground_icon
 from .notepad import (
     close_notepad,
     is_notepad_running,
+    list_open_window_titles,
     save_as,
     wait_for_notepad_window,
     write_text_in_notepad,
@@ -85,10 +86,17 @@ def launch_notepad_via_icon(label: str, template: Optional[str],
     cx, cy = result.center
     logger.info("Double-clicking (%d, %d).", cx, cy)
     pyautogui.moveTo(cx, cy, duration=0.2)
-    pyautogui.doubleClick(cx, cy)
+    # interval=0.1 gives Windows time to register two separate clicks rather
+    # than coalescing them into one fast click on slower machines.
+    pyautogui.doubleClick(cx, cy, interval=0.1)
 
-    if not wait_for_notepad_window(timeout=15.0):
-        logger.error("Notepad did not appear within 15s.")
+    if not wait_for_notepad_window(timeout=30.0):
+        logger.error("Notepad did not appear within 30s.")
+        titles = list_open_window_titles()
+        logger.error("Open window titles at failure: %s", titles)
+        debug_path = Path("debug") / f"launch_failed_{int(time.time())}.png"
+        save_screenshot(capture_desktop(), debug_path)
+        logger.error("Wrote debug screenshot: %s", debug_path)
         dismiss_popups()
         return False
 

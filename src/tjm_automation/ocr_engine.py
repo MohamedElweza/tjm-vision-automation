@@ -38,15 +38,24 @@ def _get_reader():
     return easyocr.Reader(["en"], gpu=False, verbose=False)
 
 
-def read_text(image: np.ndarray, min_confidence: float = 0.3) -> List[TextBox]:
+def read_text(
+    image: np.ndarray,
+    min_confidence: float = 0.3,
+    canvas_size: int = 1280,
+) -> List[TextBox]:
     """Run OCR on an image and return all detected text boxes above a confidence threshold.
 
     Args:
         image: Image as a numpy array (BGR or RGB both work; EasyOCR autodetects).
         min_confidence: Minimum confidence to keep a detection.
+        canvas_size: Internal EasyOCR resize target. Smaller is faster; 1280 cuts
+            a 1920x1080 full-desktop pass from ~25s to ~8-10s on CPU while still
+            reading default-size desktop icon labels.
     """
     reader = _get_reader()
-    raw = reader.readtext(image, detail=1, paragraph=False)
+    raw = reader.readtext(
+        image, detail=1, paragraph=False, canvas_size=canvas_size
+    )
     boxes: List[TextBox] = []
     for poly, text, conf in raw:
         if conf < min_confidence:
@@ -63,11 +72,12 @@ def find_text(
     query: str,
     min_confidence: float = 0.3,
     exact: bool = False,
+    canvas_size: int = 1280,
 ) -> List[TextBox]:
     """Find text boxes whose text matches the query (case-insensitive substring by default)."""
     query_norm = query.strip().lower()
     matches: List[TextBox] = []
-    for box in read_text(image, min_confidence=min_confidence):
+    for box in read_text(image, min_confidence=min_confidence, canvas_size=canvas_size):
         text_norm = box.text.lower()
         if exact:
             if text_norm == query_norm:
