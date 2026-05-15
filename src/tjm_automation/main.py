@@ -24,6 +24,7 @@ from .notepad import (
     wait_for_notepad_window,
     write_text_in_notepad,
 )
+from .notifications import notify_completion
 from .popup_handler import dismiss_popups
 from .screen import capture_desktop, save_screenshot, show_desktop
 
@@ -159,7 +160,7 @@ def process_one_post(post: Post, out_dir: Path, max_attempts: int = 2) -> bool:
 
 
 def run(label: str, template: Optional[str], limit: int,
-        attempts: int, reuse_window: bool) -> int:
+        attempts: int, reuse_window: bool, notify: bool = True) -> int:
     out = output_dir()
     logger.info("Output directory: %s", out)
 
@@ -202,6 +203,13 @@ def run(label: str, template: Optional[str], limit: int,
     logger.info("Done. %d/%d posts saved.", succeeded, len(posts))
     if failed_ids:
         logger.warning("Failed post ids: %s", failed_ids)
+
+    if notify:
+        try:
+            notify_completion(succeeded, len(posts), out, failed_ids)
+        except Exception as e:
+            logger.debug("Completion notification failed: %s", e)
+
     return 0 if succeeded == len(posts) else 1
 
 
@@ -216,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Grounding retry attempts per launch.")
     parser.add_argument("--reuse-window", action="store_true",
                         help="Don't close Notepad between posts (much faster).")
+    parser.add_argument("--no-notify", action="store_true",
+                        help="Don't show the end-of-run popup + beep.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -234,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         attempts=args.attempts,
         reuse_window=args.reuse_window,
+        notify=not args.no_notify,
     )
 
 
