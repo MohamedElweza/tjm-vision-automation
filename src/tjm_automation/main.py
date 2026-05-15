@@ -137,12 +137,17 @@ def process_one_post(post: Post, out_dir: Path) -> bool:
     write_text_in_notepad(text)
     save_as(file_path, overwrite=True)
 
-    time.sleep(0.5)
-    if not file_path.exists():
-        logger.error("Save failed for %s", file_path)
-        return False
-    logger.info("Saved %s (%d bytes).", file_path.name, file_path.stat().st_size)
-    return True
+    # Poll for the saved file. The Save As dialog can take 1-3s to close
+    # and write the file, especially on slower disks / OneDrive folders.
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if file_path.exists() and file_path.stat().st_size > 0:
+            logger.info("Saved %s (%d bytes).", file_path.name, file_path.stat().st_size)
+            return True
+        time.sleep(0.25)
+
+    logger.error("Save failed for %s (file missing or empty after 5s).", file_path)
+    return False
 
 
 def run(label: str, template: Optional[str], limit: int,

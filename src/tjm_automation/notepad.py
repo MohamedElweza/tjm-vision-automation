@@ -93,19 +93,20 @@ def list_open_window_titles(limit: int = 30) -> list[str]:
 
 
 def _set_clipboard(text: str) -> None:
-    """Set Windows clipboard using PowerShell (no extra deps)."""
+    """Set the Windows clipboard via pyperclip.
+
+    The previous PowerShell approach piped stdin to `Set-Clipboard`, but
+    that cmdlet does not read stdin without an explicit `$input |` upstream,
+    so it was silently a no-op. pyperclip ships with pyautogui's deps and
+    uses the Win32 clipboard API directly.
+    """
     try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Set-Clipboard"],
-            input=text,
-            text=True,
-            timeout=10,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr or "Set-Clipboard failed")
+        import pyperclip
+
+        pyperclip.copy(text)
+        time.sleep(0.1)  # let the clipboard settle before downstream Ctrl+V
     except Exception as e:
-        logger.warning("Clipboard set failed (%s); falling back to typewrite.", e)
+        logger.warning("pyperclip.copy failed (%s); typing instead (slow).", e)
         pyautogui.typewrite(text, interval=0.005)
 
 
@@ -126,22 +127,39 @@ def save_as(file_path: Path, overwrite: bool = True) -> None:
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pyautogui.hotkey("ctrl", "shift", "s")
-    time.sleep(1.5)
+    # Pre-delete so the Replace? dialog never appears. Avoids the
+    # ambiguity of whether to send Enter again or not.
+    if overwrite and file_path.exists():
+        try:
+            file_path.unlink()
+        except OSError as e:
+            logger.debug("Could not pre-delete %s (%s).", file_path, e)
 
+    # Defensive: dismiss any stale dialog left over from a previous failed save.
+    pyautogui.press("escape")
+    time.sleep(0.2)
+
+    pyautogui.hotkey("ctrl", "shift", "s")
+    time.sleep(2.0)  # Save As dialog can take ~1s on first invocation
+
+    # Alt+N explicitly focuses the "File name:" field (its accelerator key).
+    # Belt-and-braces with Ctrl+A in case Alt+N is locale-different.
+    pyautogui.hotkey("alt", "n")
+    time.sleep(0.2)
     pyautogui.hotkey("ctrl", "a")
-    time.sleep(0.1)
-    _set_clipboard(str(file_path))
     time.sleep(0.15)
+
+    _set_clipboard(str(file_path))
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.3)
+    time.sleep(0.4)
 
     pyautogui.press("enter")
-    time.sleep(0.8)
+    time.sleep(1.5)
 
-    if overwrite and file_path.exists():
-        pyautogui.press("enter")
-        time.sleep(0.4)
+    # If for any reason the Replace? prompt still appears (race with the
+    # pre-delete), confirm Yes.
+    pyautogui.hotkey("alt", "y")
+    time.sleep(0.3)
 
 
 def close_notepad() -> None:
