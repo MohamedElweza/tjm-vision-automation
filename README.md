@@ -4,9 +4,25 @@ Automate Notepad on Windows by **looking at the screen** instead of using fixed 
 
 ## See it work
 
-![Grounder detects the Notepad icon on the live desktop](screenshots/grounding_demo.png)
+The grounder finds the `Notepad` icon **wherever you put it** on the desktop. The green box is the bounding region it found; the red crosshair is where the script will double-click. It works by reading the `Notepad` label below the icon — so it generalizes to any wallpaper, any theme, and any icon position.
 
-The green box is the icon location our OCR-based grounder found. The red crosshair is where the script will double-click. The grounder finds the icon by reading the **`Notepad` label below it** — so it works no matter where you put the icon, on any wallpaper, in light or dark theme.
+### Icon at top-left of the desktop
+
+Detected at `(45, 41)` with confidence **0.96**.
+
+![Notepad detected at top-left](screenshots/01_top_left.png)
+
+### Icon at top-right of the desktop
+
+Detected at `(1852, 42)` with confidence **1.00**.
+
+![Notepad detected at top-right](screenshots/02_top_right.png)
+
+### Icon at the center of the desktop
+
+Detected at `(901, 533)` with confidence **0.98**.
+
+![Notepad detected at center](screenshots/03_center.png)
 
 ## What it does, step by step
 
@@ -138,8 +154,6 @@ If OCR fails — for example on a non-English Windows install — the grounder f
 ```
 tjm-vision-automation/
 ├── README.md                    ← you are here
-├── DOCS.md                      ← full technical reference
-├── ALTERNATIVES.md              ← design decisions and the options we rejected
 ├── pyproject.toml               ← uv configuration
 ├── src/tjm_automation/
 │   ├── main.py                  ← tjm-run: full workflow
@@ -153,14 +167,9 @@ tjm-vision-automation/
 │   ├── notifications.py         ← end-of-run popup + beep
 │   └── api_client.py            ← JSONPlaceholder client
 ├── tests/test_grounding.py
-├── screenshots/                 ← output of tjm-demo (one example committed)
+├── screenshots/                 ← annotated demo screenshots
 └── assets/                      ← captured template images
 ```
-
-## Documentation
-
-- **[DOCS.md](DOCS.md)** — architecture, every module explained, the full grounding algorithm, CLI reference, performance budget, error handling matrix.
-- **[ALTERNATIVES.md](ALTERNATIVES.md)** — every design choice in the project with a side-by-side comparison of the options and why we picked what we picked.
 
 ## Running the tests
 

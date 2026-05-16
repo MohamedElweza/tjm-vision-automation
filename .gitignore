@@ -8,10 +8,13 @@ build/
 uv.lock
 .pytest_cache/
 
+# Local-only docs (not shipped on GitHub)
+DOCS.md
+ALTERNATIVES.md
+
 # Outputs
 screenshots/*.png
 !screenshots/.gitkeep
-!screenshots/grounding_demo.png
 !screenshots/01_*.png
 !screenshots/02_*.png
 !screenshots/03_*.png
