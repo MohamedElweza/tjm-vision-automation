@@ -5,6 +5,10 @@ desktop icon at any position on a 1920x1080 desktop, double-clicks it, and write
 the first 10 posts from the JSONPlaceholder API to individual `.txt` files in
 `%USERPROFILE%\Desktop\tjm-project\`.
 
+**Documentation:**
+- [DOCS.md](DOCS.md) — full architecture, module reference, grounding algorithm, CLI reference, performance notes, known limitations.
+- [ALTERNATIVES.md](ALTERNATIVES.md) — every design decision: options considered, trade-off tables, why we picked what we picked.
+
 ## Prerequisites
 
 - Windows 10 / 11, primary display at **1920x1080** recommended.
