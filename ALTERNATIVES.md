@@ -178,18 +178,7 @@ We ship the OCR-words approach in [`popup_handler.py`](src/tjm_automation/popup_
 
 ---
 
-## 12. CI runner
-
-| Runner | Decision |
-|---|---|
-| **windows-latest** | ✓ Chosen. Project is Windows-only (pywin32, pygetwindow, the entire Win32 keyboard/clipboard stack). CI on Ubuntu would not exercise the real platform. |
-| ubuntu-latest | Faster minutes, but `pyautogui`/`pywin32`/`mss` behaviour diverges enough that green Ubuntu CI would give false confidence. |
-| Matrix Win + Ubuntu | Considered; rejected because Ubuntu adds noise without value here. |
-| Self-hosted Windows | Future option if EasyOCR install time becomes a CI cost issue. |
-
----
-
-## 13. Configuration: env vars vs CLI flags vs config file
+## 12. Configuration: env vars vs CLI flags vs config file
 
 | Option | Pros | Cons |
 |---|---|---|
@@ -201,7 +190,7 @@ The flag surface (`--label`, `--template`, `--limit`, `--attempts`, `--reuse-win
 
 ---
 
-## 14. Closing thoughts: what we'd do with more time
+## 13. Closing thoughts: what we'd do with more time
 
 In rough priority order:
 

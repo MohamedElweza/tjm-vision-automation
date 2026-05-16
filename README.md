@@ -154,8 +154,7 @@ tjm-vision-automation/
 │   └── api_client.py            ← JSONPlaceholder client
 ├── tests/test_grounding.py
 ├── screenshots/                 ← output of tjm-demo (one example committed)
-├── assets/                      ← captured template images
-└── .github/workflows/ci.yml
+└── assets/                      ← captured template images
 ```
 
 ## Documentation
@@ -168,8 +167,6 @@ tjm-vision-automation/
 ```powershell
 uv run pytest -q
 ```
-
-Continuous integration runs on `windows-latest` for every push and pull request.
 
 ## Capturing your own demo screenshot
 

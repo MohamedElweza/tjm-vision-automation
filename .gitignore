@@ -6,6 +6,7 @@ dist/
 build/
 .python-version.local
 uv.lock
+.pytest_cache/
 
 # Outputs
 screenshots/*.png

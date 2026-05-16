@@ -331,10 +331,10 @@ If the API is unreachable, content is the fallback `Title: Offline title N\n\nTh
 
 ---
 
-## 10. Tests & CI
+## 10. Tests
 
 - `tests/test_grounding.py` — 7 pytest cases covering `_select_best_label` selection rules, `_is_code_like` heuristic, and `TextBox` geometry. All non-UI logic, no screen needed.
-- `.github/workflows/ci.yml` — runs on `windows-latest`: `uv sync --all-extras --dev`, compile-check of every source file, pytest, and a smoke test that all three `tjm-*` entry points are registered.
+- Run with `uv run pytest -q`.
 
 ---
 
