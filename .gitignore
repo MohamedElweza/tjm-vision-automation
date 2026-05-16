@@ -10,6 +10,10 @@ uv.lock
 # Outputs
 screenshots/*.png
 !screenshots/.gitkeep
+!screenshots/grounding_demo.png
+!screenshots/01_*.png
+!screenshots/02_*.png
+!screenshots/03_*.png
 assets/*.png
 !assets/.gitkeep
 debug/

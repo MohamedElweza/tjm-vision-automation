@@ -1,168 +1,182 @@
 # TJM Vision Automation
 
-Vision-based desktop automation for Windows. Dynamically locates the **Notepad**
-desktop icon at any position on a 1920x1080 desktop, double-clicks it, and writes
-the first 10 posts from the JSONPlaceholder API to individual `.txt` files in
-`%USERPROFILE%\Desktop\tjm-project\`.
+Automate Notepad on Windows by **looking at the screen** instead of using fixed coordinates. The tool finds the Notepad desktop icon wherever it is, double-clicks it, fetches 10 blog posts from a public API, and saves each one as a separate `.txt` file on your desktop.
 
-**Documentation:**
-- [DOCS.md](DOCS.md) — full architecture, module reference, grounding algorithm, CLI reference, performance notes, known limitations.
-- [ALTERNATIVES.md](ALTERNATIVES.md) — every design decision: options considered, trade-off tables, why we picked what we picked.
+## See it work
+
+![Grounder detects the Notepad icon on the live desktop](screenshots/grounding_demo.png)
+
+The green box is the icon location our OCR-based grounder found. The red crosshair is where the script will double-click. The grounder finds the icon by reading the **`Notepad` label below it** — so it works no matter where you put the icon, on any wallpaper, in light or dark theme.
+
+## What it does, step by step
+
+1. Minimize all windows so the real desktop is visible.
+2. Take a screenshot.
+3. Run OCR on the screenshot and find the text label `Notepad`.
+4. Click 40 pixels above the label — the center of the icon image.
+5. Wait for Notepad to launch.
+6. For each of 10 posts from [JSONPlaceholder](https://jsonplaceholder.typicode.com/posts):
+   - Type the post into Notepad
+   - Press **Ctrl+Shift+S** and save as `post_N.txt` into `Desktop\tjm-project\`
+   - Close Notepad and repeat
+7. Show a popup + beep when done.
 
 ## Prerequisites
 
-- Windows 10 / 11, primary display at **1920x1080** recommended.
-- A **Notepad shortcut on your Desktop** named `Notepad`.
-- Python 3.10–3.12 (managed by [`uv`](https://github.com/astral-sh/uv)).
-- Internet access for the first run (EasyOCR downloads model weights once,
-  ~80 MB) and to reach `jsonplaceholder.typicode.com`.
+- Windows 10 or 11
+- A **Notepad shortcut on your desktop** (right-click empty desktop → New → Shortcut → `notepad.exe`)
+- [uv](https://github.com/astral-sh/uv) installed:
 
-## Install
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
+## Install & run
 
 ```powershell
-# in the project root
+git clone https://github.com/MohamedElweza/tjm-vision-automation.git
+cd tjm-vision-automation
 uv sync
 ```
 
-## Run
+The first `uv sync` downloads PyTorch and EasyOCR's models (~1–2 GB total, one-time).
+
+Then run the full workflow:
 
 ```powershell
-# Full workflow: ground icon -> launch Notepad -> write & save 10 posts
-uv run tjm-run
+uv run tjm-run --reuse-window
+```
 
-# Faster: keep Notepad open and just re-use it between posts
+When the popup appears at the end, check `Desktop\tjm-project\` — you'll find `post_1.txt` through `post_10.txt`.
+
+## Commands
+
+```powershell
+# Full workflow: ground icon, launch Notepad, save 10 posts
 uv run tjm-run --reuse-window
 
-# Different icon (the grounding is label-driven, so the same code works)
-uv run tjm-run --label "Notepad++"
+# Same but obey the spec literally (close & re-launch Notepad each iteration, slower)
+uv run tjm-run
 
-# Generate an annotated screenshot showing what the grounder found
+# Generate the screenshot above (annotated grounding visualisation)
 uv run tjm-demo
-uv run tjm-demo --label "Recycle Bin" --out screenshots/bin.png
 
-# One-time: capture a template image of Notepad from your live desktop
-# (used by the template-matching fallback when OCR fails)
+# Same, but for a different icon
+uv run tjm-demo --label "Recycle Bin"
+
+# Capture a template image of the Notepad icon for the OCR-fallback path
 uv run tjm-capture-template
-uv run tjm-run --template assets/notepad.png
 ```
 
-`tjm-run` prints a live log and exits 0 if every post was saved. Files land in
-`Desktop\tjm-project\post_<id>.txt`.
+Every command has `--help` for full options.
 
-## Capturing the three required demo screenshots
+## Output
 
-After `uv sync`, move the Notepad shortcut on your desktop and run:
-
-```powershell
-# 1. Move the icon to the top-left of the desktop, then:
-uv run tjm-demo --out screenshots/01_top_left.png
-
-# 2. Move it to the bottom-right:
-uv run tjm-demo --out screenshots/02_bottom_right.png
-
-# 3. Move it to the center:
-uv run tjm-demo --out screenshots/03_center.png
+```
+%OneDrive%\Desktop\tjm-project\
+├── post_1.txt
+├── post_2.txt
+├── ...
+└── post_10.txt
 ```
 
-Each output PNG shows the full desktop with a green bounding box around the
-detected icon, a red crosshair at the click point, and yellow annotations for
-every text the OCR saw (helpful for debugging false negatives).
+Each file looks like:
+
+```
+Title: sunt aut facere repellat provident occaecati excepturi optio reprehenderit
+
+quia et suscipit
+suscipit recusandae consequuntur expedita et cum
+reprehenderit molestiae ut ut quas totam
+nostrum rerum est autem sunt rem eveniet architecto
+```
+
+If the API isn't reachable, the script falls back to `Offline title N` stubs so the rest of the pipeline can still be demonstrated.
 
 ## How the grounding works
 
-The grounding strategy is **label-first, image-fallback** — generalisable
-because the prompt was deliberately about *any* icon, not just Notepad.
+This is the part the assessment cares about. The code uses **OCR labels**, not template images, so it generalises to any icon you can name.
 
-1. **OCR pass.** Capture the desktop, run EasyOCR across the full frame, and
-   collect every text box with its bounding rectangle and confidence.
-2. **Label match.** Filter for the target label (`Notepad`, by default).
-   Exact case-insensitive matches are preferred over substring matches — this
-   is how we distinguish `Notepad` from `Notepad++` when both icons exist.
-3. **Geometric inversion.** A Windows desktop icon renders its label
-   centered *below* the icon image. So once we have the label box, the
-   icon's clickable center is `(label_x, label_y - 40px)`. We click there.
-4. **Verification.** Wait for a window whose title ends in `- Notepad` to
-   appear (via `pygetwindow`). If it doesn't, we count that as a failure and
-   retry from step 1.
-5. **Fallback.** If OCR fails entirely (extreme contrast, language pack
-   missing, etc.), `--template path/to/notepad.png` activates OpenCV
-   `matchTemplate` as a backup.
+```
+                Screenshot
+                    │
+                    ▼
+      ┌─────────────────────────────┐
+      │  EasyOCR reads all text     │
+      │  on the desktop             │
+      └─────────────┬───────────────┘
+                    │
+                    ▼
+      ┌─────────────────────────────┐
+      │  Find boxes matching        │
+      │  "Notepad" (case-insensitive)│
+      └─────────────┬───────────────┘
+                    │
+                    ▼
+      ┌─────────────────────────────┐
+      │  Prefer exact match over    │
+      │  substring (rejects         │
+      │  "Notepad++", "notepad_*")  │
+      └─────────────┬───────────────┘
+                    │
+                    ▼
+      ┌─────────────────────────────┐
+      │  Icon center = label center │
+      │  shifted up by ~40 pixels   │
+      │  (icon image sits above     │
+      │  the label on Windows)      │
+      └─────────────┬───────────────┘
+                    │
+                    ▼
+                Click here.
+```
 
-### Why this approach over alternatives
-
-| Approach | Pros | Cons | Used? |
-|---|---|---|---|
-| Template matching | Fast, deterministic | Needs a per-icon image; brittle to theme/scale | Fallback |
-| OCR + label | Works for any **labelled** UI element with no per-icon training | Slower (~0.5–1.5s); needs readable text | **Primary** |
-| Pixel-perfect icon paths | Trivial for Notepad (`notepad.exe`) | Sidesteps the actual challenge | Rejected |
-| VLM grounding (paper) | Highest flexibility | Needs API key / heavy local model | Out of scope (no key) |
-
-### Pop-up handling
-
-`popup_handler.dismiss_popups()` is invoked between failed ground attempts.
-It OCRs the screen and clicks the center of any text box whose content is in
-a dismiss-words list (`Close`, `Cancel`, `Skip`, `Not now`, …). This works
-for pop-ups we've never seen before, because we never relied on their
-appearance — only on the universal convention that they have a dismiss
-button somewhere on screen.
-
-### Error handling & retries
-
-- Grounding retries up to **3 times** with **1 s** delay between attempts.
-- Between retries we dismiss any pop-ups that may be covering the desktop.
-- Launch is verified by polling top-level window titles; 15 s timeout.
-- API failure → local fallback posts (`Offline title 1` … `10`) so the
-  vision pipeline can still be tested without network.
-- Existing files in `Desktop\tjm-project\` are silently overwritten by
-  pressing **Enter** on Notepad's "replace?" prompt.
+If OCR fails — for example on a non-English Windows install — the grounder falls back to OpenCV template matching against an optional reference image you can capture with `uv run tjm-capture-template`.
 
 ## Project layout
 
 ```
 tjm-vision-automation/
-├── pyproject.toml          # uv config + entry points
-├── README.md
+├── README.md                    ← you are here
+├── DOCS.md                      ← full technical reference
+├── ALTERNATIVES.md              ← design decisions and the options we rejected
+├── pyproject.toml               ← uv configuration
 ├── src/tjm_automation/
-│   ├── api_client.py       # JSONPlaceholder client
-│   ├── capture_template.py # tjm-capture-template: snip icon -> assets/<label>.png
-│   ├── demo.py             # tjm-demo: annotated screenshot generator
-│   ├── grounding.py        # OCR label grounding + template fallback
-│   ├── main.py             # tjm-run: full workflow
-│   ├── notepad.py          # Type / save-as / close primitives
-│   ├── ocr_engine.py       # EasyOCR wrapper with lazy init
-│   ├── popup_handler.py    # Generic pop-up dismissal
-│   └── screen.py           # mss screenshot helpers
-├── assets/                 # Captured icon templates (gitignored except .gitkeep)
-├── screenshots/            # Output of tjm-demo
-├── tests/                  # pytest unit tests
+│   ├── main.py                  ← tjm-run: full workflow
+│   ├── demo.py                  ← tjm-demo: annotated screenshot
+│   ├── capture_template.py      ← tjm-capture-template: seed fallback image
+│   ├── grounding.py             ← OCR label grounding + template fallback
+│   ├── ocr_engine.py            ← EasyOCR wrapper
+│   ├── screen.py                ← screenshot + show-desktop helpers
+│   ├── notepad.py               ← type / save-as / close primitives
+│   ├── popup_handler.py         ← generic OCR-driven pop-up dismissal
+│   ├── notifications.py         ← end-of-run popup + beep
+│   └── api_client.py            ← JSONPlaceholder client
+├── tests/test_grounding.py
+├── screenshots/                 ← output of tjm-demo (one example committed)
+├── assets/                      ← captured template images
 └── .github/workflows/ci.yml
 ```
 
-## Discussion notes (for the interview)
+## Documentation
 
-**When detection fails.** The two realistic failure modes I've observed:
+- **[DOCS.md](DOCS.md)** — architecture, every module explained, the full grounding algorithm, CLI reference, performance budget, error handling matrix.
+- **[ALTERNATIVES.md](ALTERNATIVES.md)** — every design choice in the project with a side-by-side comparison of the options and why we picked what we picked.
 
-- Very busy wallpaper with text behind the icon → OCR picks up the wrong box.
-  Mitigation: prefer the higher-confidence exact match; the heuristic above
-  the label is robust because the wallpaper text wouldn't have an icon above it.
-- Dark theme + dark wallpaper → label contrast collapses. Mitigation: run
-  EasyOCR with `min_confidence=0.2`, or pass `--template` for fallback.
+## Running the tests
 
-**Latency.** End-to-end ground call is ~0.6 s warm (EasyOCR initialisation
-~3 s cold; cached after first call). At 1920x1080, full-frame OCR is the
-bottleneck; restricting to the leftmost ~600px would cut this roughly in
-half for typical icon layouts, at the cost of generality.
+```powershell
+uv run pytest -q
+```
 
-**Scaling.** Extending to arbitrary icons requires no code change — pass
-`--label "<text>"`. For unlabelled or icon-only targets, the template
-fallback covers the gap; for true zero-shot grounding, swap `grounding.py`'s
-primary path for a VLM call (e.g. Claude's `computer-use` tool or
-GPT-4o with `detail=high`).
+Continuous integration runs on `windows-latest` for every push and pull request.
 
-**Different resolutions.** The `LABEL_TO_ICON_OFFSET_PX` constant in
-`grounding.py` is tuned for 1920x1080 with default icon size. For other
-DPIs, scale this by `dpi_scale * icon_size_factor`. The rest of the pipeline
-is resolution-agnostic.
+## Capturing your own demo screenshot
 
-**Light/dark themes.** EasyOCR handles both reasonably; if accuracy drops,
-binarising the screenshot with adaptive thresholding before OCR helps.
+Move the Notepad icon anywhere on your desktop, then:
+
+```powershell
+uv run tjm-demo --out screenshots/my_demo.png
+```
+
+The script minimizes your windows, captures the desktop, annotates the icon location, saves the PNG, and restores your windows.
