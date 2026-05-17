@@ -164,16 +164,8 @@ def run(label: str, template: Optional[str], limit: int,
     out = output_dir()
     logger.info("Output directory: %s", out)
 
-    try:
-        posts = fetch_posts(limit=limit)
-        logger.info("Fetched %d posts from JSONPlaceholder.", len(posts))
-    except Exception as e:
-        logger.error("API unavailable (%s). Using local fallback posts.", e)
-        posts = [
-            Post(id=i, title=f"Offline title {i}",
-                 body=f"This is fallback body text {i}.\nLine 2.")
-            for i in range(1, limit + 1)
-        ]
+    posts = fetch_posts(limit=limit)
+    logger.info("Fetched %d posts.", len(posts))
 
     succeeded = 0
     failed_ids: list[int] = []
