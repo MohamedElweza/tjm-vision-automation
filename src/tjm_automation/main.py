@@ -85,14 +85,14 @@ def attempt_ground(label: str, template: Optional[str], attempts: int = 3,
         result = ground_icon(image, label, template_path=template)
         last = result
         if result.found:
-            logger.info("  -> hit: center=%s conf=%.2f via %s",
-                        result.center, result.confidence, result.method)
+            logger.info("  -> Found '%s' at %s (confidence=%.0f%%, method=%s).",
+                        label, result.center, result.confidence * 100, result.method)
             return result
 
-        logger.warning("  -> miss: %s", result.reason)
+        logger.warning("  -> Icon not found: %s", result.reason)
         n_dismissed = dismiss_popups()
         if n_dismissed:
-            logger.info("Dismissed %d pop-up(s) before retry.", n_dismissed)
+            logger.info("  -> Dismissed %d pop-up(s) before next attempt.", n_dismissed)
         time.sleep(delay)
     return last
 
@@ -102,7 +102,20 @@ def launch_notepad_via_icon(label: str, template: Optional[str],
     """Ground the icon and double-click it. Validate Notepad launched."""
     result = attempt_ground(label, template, attempts=attempts)
     if result is None or not result.found or result.center is None:
-        logger.error("Could not ground '%s' after retries.", label)
+        logger.error(
+            "\n"
+            "  Could not find the '%s' icon on your desktop after %d attempt(s).\n"
+            "\n"
+            "  Things to check:\n"
+            "    1. Press Win+D to make sure the desktop is fully visible.\n"
+            "    2. Confirm that a '%s' shortcut actually exists on the desktop.\n"
+            "    3. If the icon has a different label (e.g. 'Text Editor'),\n"
+            "       re-run with:  --label \"Text Editor\"\n"
+            "    4. If the label is hard to read (dark theme, small icons),\n"
+            "       run  tjm-capture-template  while the icon is visible to\n"
+            "       create a visual fallback, then re-run with:  --template template.png",
+            label, attempts, label,
+        )
         return False
 
     cx, cy = result.center
@@ -113,12 +126,23 @@ def launch_notepad_via_icon(label: str, template: Optional[str],
     pyautogui.doubleClick(cx, cy, interval=0.1)
 
     if not wait_for_notepad_window(timeout=30.0):
-        logger.error("Notepad did not appear within 30s.")
-        titles = list_open_window_titles()
-        logger.error("Open window titles at failure: %s", titles)
         debug_path = Path("debug") / f"launch_failed_{int(time.time())}.png"
         save_screenshot(capture_desktop(), debug_path)
-        logger.error("Wrote debug screenshot: %s", debug_path)
+        titles = list_open_window_titles()
+        logger.error(
+            "\n"
+            "  The Notepad icon was found and double-clicked, but Notepad\n"
+            "  didn't open within 30 seconds.\n"
+            "\n"
+            "  Things to check:\n"
+            "    1. Did a dialog appear (e.g. 'How do you want to open this')?  \n"
+            "       Dismiss it, then re-run.\n"
+            "    2. Try double-clicking the Notepad icon yourself to confirm it opens.\n"
+            "    3. On a slow machine try:  --attempts 5  to allow more retries.\n"
+            "    4. A debug screenshot was saved to:  %s\n"
+            "  Windows open at the time of failure: %s",
+            debug_path, titles or ["(none detected)"],
+        )
         dismiss_popups()
         return False
 
@@ -133,13 +157,21 @@ def process_one_post(post: Post, out_dir: Path, max_attempts: int = 2) -> bool:
 
     for attempt in range(1, max_attempts + 1):
         if not is_notepad_running():
-            logger.error("Notepad not running when trying to write post %d.", post.id)
+            logger.error(
+                "\n"
+                "  Notepad closed unexpectedly before writing post %d.\n"
+                "  It may have crashed or been closed manually during the run.\n"
+                "  The automation will try to re-open it for the next post.",
+                post.id,
+            )
             return False
 
         if attempt > 1:
             # Dismiss any stuck dialog left over from a failed save before retrying.
             pyautogui.press("escape")
             time.sleep(0.4)
+            logger.info("Retrying save for post %d (attempt %d/%d)...",
+                        post.id, attempt, max_attempts)
 
         write_text_in_notepad(text)
         save_as(file_path, overwrite=True)
@@ -153,9 +185,24 @@ def process_one_post(post: Post, out_dir: Path, max_attempts: int = 2) -> bool:
             time.sleep(0.25)
 
         if attempt < max_attempts:
-            logger.warning("Save attempt %d failed for %s; retrying.", attempt, file_path.name)
+            logger.warning(
+                "Post %d: file didn't appear on disk after Save As — "
+                "dismissing any stuck dialog and retrying.",
+                post.id,
+            )
 
-    logger.error("Save failed for %s after %d attempts.", file_path, max_attempts)
+    logger.error(
+        "\n"
+        "  Could not save post %d after %d attempt(s).\n"
+        "\n"
+        "  Things to check:\n"
+        "    1. Is the output folder writable?\n"
+        "       Folder: %s\n"
+        "    2. Is a 'Save As' dialog still open on screen? Press Escape and re-run.\n"
+        "    3. If the Desktop is on OneDrive and syncing slowly, try:\n"
+        "       --reuse-window  (keeps Notepad open, reduces Save As calls)",
+        post.id, max_attempts, file_path.parent,
+    )
     return False
 
 
@@ -185,24 +232,59 @@ def run(label: str, template: Optional[str], limit: int,
             else:
                 failed_ids.append(post.id)
         except Exception as e:
-            logger.exception("Unhandled error for post %d: %s", post.id, e)
+            logger.exception(
+                "Unexpected error while processing post %d: %s\n"
+                "  The automation will continue with the next post.",
+                post.id, e,
+            )
             failed_ids.append(post.id)
         finally:
             if not reuse_window:
                 close_notepad()
                 time.sleep(0.5)
 
-    logger.info("Done. %d/%d posts saved.", succeeded, len(posts))
-    if failed_ids:
-        logger.warning("Failed post ids: %s", failed_ids)
+    total = len(posts)
+    if succeeded == total:
+        logger.info("All %d posts saved successfully.", total)
+    else:
+        logger.info("%d of %d posts saved.", succeeded, total)
 
+    if failed_ids:
+        logger.warning(
+            "\n"
+            "  %d post(s) were not saved: ids %s\n"
+            "  Re-run the same command to retry — already-saved posts will be overwritten\n"
+            "  cleanly, so it is safe to run again.",
+            len(failed_ids), failed_ids,
+        )
+
+    hint = _failure_hint(succeeded, total, failed_ids)
     if notify:
         try:
-            notify_completion(succeeded, len(posts), out, failed_ids)
+            notify_completion(succeeded, total, out, failed_ids, hint=hint)
         except Exception as e:
             logger.debug("Completion notification failed: %s", e)
 
-    return 0 if succeeded == len(posts) else 1
+    return 0 if succeeded == total else 1
+
+
+def _failure_hint(succeeded: int, total: int, failed_ids: list[int]) -> str:
+    if succeeded == total:
+        return ""
+    if succeeded == 0:
+        return (
+            "Nothing was saved. Most likely the Notepad icon could not be found "
+            "on the desktop, or Notepad failed to open.\n\n"
+            "Quick fixes:\n"
+            "  • Press Win+D and confirm a Notepad shortcut is on the desktop.\n"
+            "  • If the icon label differs, re-run with: --label \"YourLabel\"\n"
+            "  • Run  tjm-capture-template  to add a visual fallback."
+        )
+    return (
+        f"{len(failed_ids)} post(s) were not saved: ids {failed_ids}\n\n"
+        "Re-run the same command to retry the failed posts.\n"
+        "Already-saved files will be overwritten cleanly."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

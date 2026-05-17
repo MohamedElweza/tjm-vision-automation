@@ -49,23 +49,34 @@ def notify_completion(
     total: int,
     output_dir: Path,
     failed_ids: Iterable[int] = (),
+    hint: str = "",
 ) -> None:
     """Beep + popup at the end of the workflow."""
     failed_list = list(failed_ids)
     success = succeeded == total and not failed_list
 
-    title = (
-        "TJM Vision Automation — Done"
-        if success
-        else "TJM Vision Automation — Finished with errors"
-    )
-    lines = [
-        f"Saved: {succeeded}/{total} posts",
-        f"Folder: {output_dir}",
-    ]
-    if failed_list:
-        lines.append(f"Failed post ids: {failed_list}")
-    message = "\n".join(lines)
+    if success:
+        title = "TJM Automation — All Done!"
+        message = (
+            f"All {total} posts saved successfully.\n\n"
+            f"Files are in:\n{output_dir}"
+        )
+    elif succeeded == 0:
+        title = "TJM Automation — Nothing Saved"
+        message = f"0 of {total} posts could be saved.\n\n{hint}" if hint else (
+            f"0 of {total} posts could be saved.\n\n"
+            "Check the terminal output above for details on what went wrong."
+        )
+    else:
+        title = f"TJM Automation — {succeeded}/{total} Saved"
+        lines = [
+            f"{succeeded} of {total} posts saved.",
+            f"Failed post ids: {failed_list}",
+            f"Files are in:\n{output_dir}",
+        ]
+        if hint:
+            lines.append(f"\n{hint}")
+        message = "\n".join(lines)
 
     _play_sound(success)
     _show_message_box(title, message, success)
