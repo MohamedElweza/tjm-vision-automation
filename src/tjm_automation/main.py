@@ -223,8 +223,17 @@ def run(label: str, template: Optional[str], limit: int,
         if not is_notepad_running():
             ok = launch_notepad_via_icon(label, template, attempts=attempts)
             if not ok:
-                failed_ids.append(post.id)
-                continue
+                # Abort the whole run: if the icon can't be grounded once, it
+                # won't ground on the next post either — fail fast instead of
+                # repeating the same error for every remaining post.
+                remaining = [p.id for p in posts[idx - 1:]]
+                failed_ids.extend(remaining)
+                logger.error(
+                    "Aborting run: could not launch Notepad. "
+                    "Skipping %d remaining post(s): %s",
+                    len(remaining) - 1, remaining[1:] or "(none)",
+                )
+                break
 
         try:
             if process_one_post(post, out):
