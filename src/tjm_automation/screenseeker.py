@@ -1,7 +1,7 @@
 """ScreenSeekeR: cascaded visual search for GUI grounding.
 
 Implements the algorithm from arXiv:2504.07981 (Li et al., 2025 — ScreenSpot-Pro).
-Three-tier decomposition driven by a single VLM (Claude Sonnet 4.6 here):
+Three-tier decomposition driven by a single VLM:
 
     1. Planner — full screenshot + natural-language target -> ranked candidate regions.
     2. Grounder — crop of a candidate region -> precise bounding box of the target.
@@ -12,10 +12,16 @@ recurses on the crop until the patch is small enough (or max_depth is reached) t
 direct-ground. This narrowing-search pattern is the paper's key insight: it raised
 ScreenSpot-Pro accuracy from 18.9 percent (single-pass grounding) to 48.1 percent.
 
-The paper uses GPT-4o as planner and OS-Atlas-7B as grounder. This implementation uses
-Claude Sonnet 4.6 for both roles via the Anthropic API. The structure (planner -> grounder
--> score -> crop -> recurse -> verify) is preserved exactly; only the model is different.
-Off-the-shelf OS-Atlas-7B would require a GPU not available in this assessment's runtime.
+The paper uses GPT-4o as planner and OS-Atlas-7B as grounder. This implementation supports
+two interchangeable backends via the `provider` argument:
+
+    - "google"    -> Gemini 1.5 Flash via google-generativeai (free tier, no card).
+    - "anthropic" -> Claude Sonnet 4.6 via the Anthropic API (paid, higher quality).
+    - "auto"      -> Prefer Google if GEMINI_API_KEY/GOOGLE_API_KEY is set, else Anthropic.
+
+Off-the-shelf OS-Atlas-7B would require a GPU not available in this assessment's runtime,
+so we substitute a hosted VLM. The cascade STRUCTURE (planner -> grounder -> score -> crop
+-> recurse -> verify) is preserved exactly; only the underlying model changes.
 
 Designed to drop in alongside the existing OCR pipeline as a high-flexibility option;
 falls through to OCR if no API key is configured. See `grounding.ground_icon()`.
@@ -28,7 +34,7 @@ import io
 import logging
 import os
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Type
 
 import cv2
 import numpy as np
@@ -40,11 +46,19 @@ try:
 except ImportError:
     anthropic = None  # type: ignore
 
+try:
+    from google import genai as google_genai
+    from google.genai import types as google_genai_types
+except ImportError:
+    google_genai = None  # type: ignore
+    google_genai_types = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
-# Sonnet 4.6 vision API caps the long edge at ~1568px. We downscale before sending
-# the planner the full desktop; saves tokens and avoids silent server-side resize.
-MAX_LONG_EDGE_PX = 1280
+# Hosted VLMs scale better to high resolution than they used to. We keep a generous
+# long-edge cap so a 4K display gets downscaled, but for typical 1920x1080 desktops
+# the image is sent at native resolution — small icons need every pixel they can get.
+MAX_LONG_EDGE_PX = 1920
 
 # Coordinate normalization: the model returns boxes in [0, 1000] regardless of the
 # actual image resolution. This is the convention most VLM grounders are trained on
@@ -108,8 +122,17 @@ PLANNER_SYSTEM = """You are a GUI grounding planner. Given a screenshot and a \
 natural-language description of a target UI element, identify candidate regions of the \
 image most likely to contain the target.
 
-Coordinate system: the image's top-left is (0, 0) and bottom-right is (1000, 1000). All \
-region coordinates are in this normalized space, regardless of the image's pixel size.
+COORDINATE SYSTEM — READ CAREFULLY:
+- The image's TOP-LEFT corner is (0, 0).
+- The image's BOTTOM-RIGHT corner is (1000, 1000) — both x AND y normalized to 0-1000.
+- x1 = LEFT edge of the region (smaller x).
+- y1 = TOP edge of the region (smaller y).
+- x2 = RIGHT edge of the region (larger x).
+- y2 = BOTTOM edge of the region (larger y).
+- IMPORTANT: format is [x_min, y_min, x_max, y_max], NOT [y_min, x_min, y_max, x_max].
+- x is HORIZONTAL (left/right). y is VERTICAL (top/bottom).
+- Upper-left region of the image -> x and y values should all be small (e.g. 0-300).
+- Lower-right region -> x and y values should all be large (e.g. 700-1000).
 
 Apply these heuristics:
 - Use GUI conventions (desktop icons on the left, taskbar at the bottom, system tray \
@@ -118,14 +141,23 @@ bottom-right, title bars at the top, etc.) to predict where the target sits.
 - Reason about neighbors: related icons or labels tell you the target is nearby.
 - Treat popups, modal dialogs, and floating windows as OBSTACLES unless the target is \
 inside one of them. Look around them, not through them.
-- Return 1-5 candidates in descending probability. Prefer slightly oversized regions \
-(easier to crop into) over tight ones (might miss the target)."""
+- Return 1-5 candidates in descending probability. Each region should be GENEROUSLY sized \
+(at least 200x200 in 0-1000 space) — the goal is to localize an area for a closer look, \
+not to draw a tight box around the target."""
 
 GROUNDER_SYSTEM = """You are a GUI grounding model. Given a screenshot (which may be a \
 cropped patch of a larger screen) and a natural-language description, return the precise \
 bounding box of the target.
 
-Coordinate system: top-left is (0, 0), bottom-right is (1000, 1000), normalized.
+COORDINATE SYSTEM — READ CAREFULLY:
+- The image's TOP-LEFT corner is (0, 0).
+- The image's BOTTOM-RIGHT corner is (1000, 1000) — both x AND y normalized to 0-1000.
+- x1 = LEFT edge of the box (smaller x).
+- y1 = TOP edge of the box (smaller y).
+- x2 = RIGHT edge of the box (larger x).
+- y2 = BOTTOM edge of the box (larger y).
+- IMPORTANT: the format is [x_min, y_min, x_max, y_max], NOT [y_min, x_min, y_max, x_max].
+- x is HORIZONTAL position (left/right). y is VERTICAL position (top/bottom).
 
 Rules:
 - If the target is clearly visible, set found=true and return a tight box around its \
@@ -133,7 +165,8 @@ CLICKABLE area.
 - For Windows desktop icons specifically, the click target is the ICON IMAGE itself, \
 which sits ABOVE the text label. Box the icon, not the label.
 - If the target is not visible, set found=false and leave coordinates at 0.
-- Be precise: the center of your box becomes the click point."""
+- Be precise: the center of your box becomes the click point. If the target is in the \
+upper-left of the image, your box's x and y values should all be small."""
 
 CHECKER_SYSTEM = """You are a verification model. The image you see has a candidate \
 target highlighted with a red rectangle. Classify whether the highlighted element is the \
@@ -152,34 +185,83 @@ class ScreenSeekeR:
     """GUI grounding via cascaded visual search (paper-faithful structure).
 
     Args:
-        model: Claude model ID. Defaults to Sonnet 4.6 per the configured assessment.
+        provider: "auto" (default), "google", or "anthropic". `auto` picks Google if
+            GEMINI_API_KEY/GOOGLE_API_KEY is set, else Anthropic.
+        model: Override the per-provider default model ID.
+            - google default: "gemini-1.5-flash" (free tier)
+            - anthropic default: "claude-sonnet-4-6"
         max_depth: Max recursion depth before forcing a direct grounding call.
         min_patch_px: If the shorter image dim drops to this, stop recursing.
-        api_key: Override `ANTHROPIC_API_KEY` env var if needed.
+        api_key: Override the relevant env var for the chosen provider.
     """
+
+    PROVIDER_DEFAULT_MODELS = {
+        "google": "gemini-2.5-flash",
+        "anthropic": "claude-sonnet-4-6",
+    }
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
+        provider: str = "auto",
+        model: Optional[str] = None,
         max_depth: int = 2,
         min_patch_px: int = 480,
         api_key: Optional[str] = None,
     ):
-        if anthropic is None:
-            raise RuntimeError(
-                "The 'anthropic' package is not installed. Run: uv add anthropic"
-            )
-        if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set and no api_key argument was provided."
-            )
-        self.client = (
-            anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        )
-        self.model = model
+        provider = self._resolve_provider(provider)
+        self.provider = provider
+        self.model = model or self.PROVIDER_DEFAULT_MODELS[provider]
+        self._init_client(api_key)
         self.max_depth = max_depth
         self.min_patch_px = min_patch_px
         self._api_calls = 0
+
+    @staticmethod
+    def _resolve_provider(provider: str) -> str:
+        if provider != "auto":
+            if provider not in ScreenSeekeR.PROVIDER_DEFAULT_MODELS:
+                raise ValueError(
+                    f"Unknown provider {provider!r}. Use 'auto', 'google', or 'anthropic'."
+                )
+            return provider
+        if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+            return "google"
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return "anthropic"
+        raise RuntimeError(
+            "No VLM API key found. Set GEMINI_API_KEY (free, "
+            "https://aistudio.google.com/app/apikey) or ANTHROPIC_API_KEY (paid)."
+        )
+
+    def _init_client(self, api_key: Optional[str]) -> None:
+        if self.provider == "google":
+            if google_genai is None:
+                raise RuntimeError(
+                    "The 'google-genai' package is not installed. "
+                    "Run: uv add google-genai"
+                )
+            key = (
+                api_key
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("GOOGLE_API_KEY")
+            )
+            if not key:
+                raise RuntimeError(
+                    "Google provider selected but no API key. Set GEMINI_API_KEY."
+                )
+            self._google_client = google_genai.Client(api_key=key)
+        else:  # anthropic
+            if anthropic is None:
+                raise RuntimeError(
+                    "The 'anthropic' package is not installed. Run: uv add anthropic"
+                )
+            if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+                raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+            self.client = (
+                anthropic.Anthropic(api_key=api_key)
+                if api_key
+                else anthropic.Anthropic()
+            )
 
     # -------- Public entry point --------
 
@@ -288,69 +370,114 @@ class ScreenSeekeR:
             reason=g.rationale,
         )
 
-    # -------- API calls (one per role) --------
+    # -------- VLM dispatch (provider-agnostic) --------
+
+    def _vlm_call(
+        self,
+        system_prompt: str,
+        image: np.ndarray,
+        user_text: str,
+        schema: Type[BaseModel],
+        max_tokens: int = 2048,
+    ) -> BaseModel:
+        """Single VLM round-trip. Dispatches to the active provider."""
+        self._api_calls += 1
+        png_bytes = _image_png_bytes(image)
+        if self.provider == "google":
+            return self._call_google(system_prompt, png_bytes, user_text, schema)
+        return self._call_anthropic(
+            system_prompt, png_bytes, user_text, schema, max_tokens
+        )
+
+    def _call_anthropic(
+        self,
+        system_prompt: str,
+        png_bytes: bytes,
+        user_text: str,
+        schema: Type[BaseModel],
+        max_tokens: int,
+    ) -> BaseModel:
+        msg = self.client.messages.parse(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            output_format=schema,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": base64.standard_b64encode(png_bytes).decode(
+                                    "ascii"
+                                ),
+                            },
+                        },
+                        {"type": "text", "text": user_text},
+                    ],
+                }
+            ],
+        )
+        return msg.parsed_output
+
+    def _call_google(
+        self,
+        system_prompt: str,
+        png_bytes: bytes,
+        user_text: str,
+        schema: Type[BaseModel],
+    ) -> BaseModel:
+        # New google-genai SDK: system_instruction lives on the per-call config,
+        # not on a model object. response_schema accepts a Pydantic class directly.
+        response = self._google_client.models.generate_content(
+            model=self.model,
+            contents=[
+                google_genai_types.Part.from_bytes(
+                    data=png_bytes, mime_type="image/png"
+                ),
+                user_text,
+            ],
+            config=google_genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                response_schema=schema,
+            ),
+        )
+        # The SDK populates `response.parsed` with a validated Pydantic instance
+        # when response_schema is a BaseModel subclass; `response.text` carries
+        # the JSON string as a fallback.
+        if getattr(response, "parsed", None) is not None:
+            return response.parsed  # type: ignore[return-value]
+        return schema.model_validate_json(response.text)
+
+    # -------- One method per algorithmic role --------
 
     def _plan(self, image: np.ndarray, target: str) -> PlannerResponse:
-        self._api_calls += 1
-        msg = self.client.messages.parse(
-            model=self.model,
+        return self._vlm_call(
+            PLANNER_SYSTEM,
+            image,
+            f"Target: {target}\n\nList 1-5 candidate regions ordered by descending probability.",
+            PlannerResponse,
             max_tokens=2048,
-            system=[
-                {
-                    "type": "text",
-                    "text": PLANNER_SYSTEM,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            output_format=PlannerResponse,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        _image_block(image),
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Target: {target}\n\n"
-                                "List 1-5 candidate regions ordered by descending "
-                                "probability."
-                            ),
-                        },
-                    ],
-                }
-            ],
-        )
-        return msg.parsed_output
+        )  # type: ignore[return-value]
 
     def _ground(self, image: np.ndarray, target: str) -> GroundResponse:
-        self._api_calls += 1
-        msg = self.client.messages.parse(
-            model=self.model,
+        return self._vlm_call(
+            GROUNDER_SYSTEM,
+            image,
+            f"Target: {target}\n\nReturn the bounding box.",
+            GroundResponse,
             max_tokens=1024,
-            system=[
-                {
-                    "type": "text",
-                    "text": GROUNDER_SYSTEM,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            output_format=GroundResponse,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        _image_block(image),
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Target: {target}\n\nReturn the bounding box."
-                            ),
-                        },
-                    ],
-                }
-            ],
-        )
-        return msg.parsed_output
+        )  # type: ignore[return-value]
 
     def _verify(
         self,
@@ -363,35 +490,14 @@ class ScreenSeekeR:
         x1, y1, x2, y2 = bbox_px
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 4)
         try:
-            self._api_calls += 1
-            msg = self.client.messages.parse(
-                model=self.model,
+            check = self._vlm_call(
+                CHECKER_SYSTEM,
+                annotated,
+                f"Target: {target}\n\nIs the red-boxed element the target?",
+                CheckResponse,
                 max_tokens=512,
-                system=[
-                    {
-                        "type": "text",
-                        "text": CHECKER_SYSTEM,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                output_format=CheckResponse,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            _image_block(annotated),
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Target: {target}\n\n"
-                                    "Is the red-boxed element the target?"
-                                ),
-                            },
-                        ],
-                    }
-                ],
             )
-            return msg.parsed_output.verdict == "is_target"
+            return check.verdict == "is_target"  # type: ignore[attr-defined]
         except Exception as e:
             # Failing the verifier open avoids penalising network blips on the happy
             # path; if both planner and leaf grounder agree, that's already strong.
@@ -402,8 +508,8 @@ class ScreenSeekeR:
 # ------------------------------- Helpers ------------------------------------
 
 
-def _image_block(image: np.ndarray) -> dict:
-    """Encode a BGR ndarray as a base64 PNG content block, downscaled to fit the API."""
+def _image_png_bytes(image: np.ndarray) -> bytes:
+    """Encode a BGR ndarray as PNG bytes, downscaling so the long edge fits the API."""
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if image.shape[2] == 3 else image
     pil = Image.fromarray(rgb)
     w, h = pil.size
@@ -415,14 +521,7 @@ def _image_block(image: np.ndarray) -> dict:
         )
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
-    return {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": "image/png",
-            "data": base64.standard_b64encode(buf.getvalue()).decode("ascii"),
-        },
-    }
+    return buf.getvalue()
 
 
 def _denorm(v: int, dim: int) -> int:

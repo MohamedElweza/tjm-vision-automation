@@ -149,14 +149,21 @@ Implements [arXiv:2504.07981 — *ScreenSpot-Pro: GUI Grounding for Professional
                           Click here.
 ```
 
-The paper uses GPT-4o as planner and OS-Atlas-7B as grounder. This implementation uses **Claude Sonnet 4.6** for both roles (running OS-Atlas locally needs a GPU not available in the assessment runtime). The decomposition is identical — see [src/tjm_automation/screenseeker.py](src/tjm_automation/screenseeker.py).
+The paper uses GPT-4o as planner and OS-Atlas-7B as grounder. This implementation supports **two interchangeable VLM backends** for both roles (running OS-Atlas-7B locally needs a GPU not available in the assessment runtime). The recursive cascade is identical to the paper — see [src/tjm_automation/screenseeker.py](src/tjm_automation/screenseeker.py).
+
+| Backend | Model | Cost | Setup |
+|---|---|---|---|
+| **Google Gemini** (default) | `gemini-1.5-flash` | **Free** (1500 req/day, no credit card) | Get key at https://aistudio.google.com/app/apikey |
+| Anthropic Claude | `claude-sonnet-4-6` | Paid (~$0.02–0.04 per launch) | Get key at https://console.anthropic.com/settings/keys |
+
+The implementation auto-detects whichever key is present (`GEMINI_API_KEY` / `GOOGLE_API_KEY` first, then `ANTHROPIC_API_KEY`). Without any key, the cascade transparently falls back to OCR.
 
 **Why this is more flexible than OCR:** the planner can reason *around* unknown pop-ups, dark themes, non-English labels, and icons whose text label is hidden. The reviewer asked specifically for a grounder that bypasses unexpected pop-ups without knowing them in advance — this loop does that because the planner explicitly treats popups as obstacles and looks elsewhere.
 
-**Enabling it:** set `ANTHROPIC_API_KEY` in your environment. The workflow auto-detects it and uses ScreenSeekeR as the primary strategy; without a key it transparently falls back to OCR.
+**Enabling it (free Gemini path):**
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "your-key"
+$env:GEMINI_API_KEY = "your-free-key"
 uv run tjm-run --reuse-window --grounder screenseeker
 ```
 
