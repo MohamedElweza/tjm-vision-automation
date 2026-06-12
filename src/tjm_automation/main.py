@@ -71,18 +71,20 @@ def output_dir() -> Path:
 
 
 def attempt_ground(label: str, template: Optional[str], attempts: int = 3,
-                   delay: float = 1.0, save_debug: bool = False) -> Optional[GroundingResult]:
+                   delay: float = 1.0, save_debug: bool = False,
+                   grounder: str = "auto") -> Optional[GroundingResult]:
     """Try to ground the icon with retries, optionally dismissing pop-ups between tries."""
     last: Optional[GroundingResult] = None
     for i in range(1, attempts + 1):
-        logger.info("Grounding '%s' (attempt %d/%d)...", label, i, attempts)
+        logger.info("Grounding '%s' (attempt %d/%d, grounder=%s)...",
+                    label, i, attempts, grounder)
         # Expose the real desktop so OCR can't latch onto text inside an editor,
         # terminal, or browser that happens to contain our label as a substring.
         show_desktop()
         image = capture_desktop()
         if save_debug:
             save_screenshot(image, Path("debug") / f"attempt_{i}.png")
-        result = ground_icon(image, label, template_path=template)
+        result = ground_icon(image, label, template_path=template, grounder=grounder)
         last = result
         if result.found:
             logger.info("  -> Found '%s' at %s (confidence=%.0f%%, method=%s).",
@@ -98,9 +100,9 @@ def attempt_ground(label: str, template: Optional[str], attempts: int = 3,
 
 
 def launch_notepad_via_icon(label: str, template: Optional[str],
-                            attempts: int = 3) -> bool:
+                            attempts: int = 3, grounder: str = "auto") -> bool:
     """Ground the icon and double-click it. Validate Notepad launched."""
-    result = attempt_ground(label, template, attempts=attempts)
+    result = attempt_ground(label, template, attempts=attempts, grounder=grounder)
     if result is None or not result.found or result.center is None:
         logger.error(
             "\n"
@@ -207,7 +209,8 @@ def process_one_post(post: Post, out_dir: Path, max_attempts: int = 2) -> bool:
 
 
 def run(label: str, template: Optional[str], limit: int,
-        attempts: int, reuse_window: bool, notify: bool = True) -> int:
+        attempts: int, reuse_window: bool, notify: bool = True,
+        grounder: str = "auto") -> int:
     out = output_dir()
     logger.info("Output directory: %s", out)
 
@@ -221,7 +224,8 @@ def run(label: str, template: Optional[str], limit: int,
         logger.info("[%d/%d] Post id=%d", idx, len(posts), post.id)
 
         if not is_notepad_running():
-            ok = launch_notepad_via_icon(label, template, attempts=attempts)
+            ok = launch_notepad_via_icon(label, template, attempts=attempts,
+                                         grounder=grounder)
             if not ok:
                 # Abort the whole run: if the icon can't be grounded once, it
                 # won't ground on the next post either — fail fast instead of
@@ -296,7 +300,19 @@ def _failure_hint(succeeded: int, total: int, failed_ids: list[int]) -> str:
     )
 
 
+def _force_utf8_stdout() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so rich's box characters don't crash
+    on a default Windows cp1252 console pipe."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdout()
     parser = argparse.ArgumentParser(description="Vision-based Notepad automation.")
     parser.add_argument("--label", default="Notepad", help="Desktop icon label.")
     parser.add_argument("--template", default=None,
@@ -305,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Number of posts to process.")
     parser.add_argument("--attempts", type=int, default=3,
                         help="Grounding retry attempts per launch.")
+    parser.add_argument("--grounder", choices=["auto", "screenseeker", "ocr"],
+                        default="auto",
+                        help="Grounding strategy. 'screenseeker' = VLM (paper). "
+                             "'ocr' = OCR + template. 'auto' (default) uses VLM "
+                             "if ANTHROPIC_API_KEY is set, else OCR.")
     parser.add_argument("--reuse-window", action="store_true",
                         help="Don't close Notepad between posts (much faster).")
     parser.add_argument("--no-notify", action="store_true",
@@ -318,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     console.print(f"Label:    [cyan]{args.label}[/cyan]")
     console.print(f"Posts:    [cyan]{args.limit}[/cyan]")
     console.print(f"Attempts: [cyan]{args.attempts}[/cyan]")
+    console.print(f"Grounder: [cyan]{args.grounder}[/cyan]")
     console.print(f"Reuse:    [cyan]{args.reuse_window}[/cyan]")
     console.rule()
 
@@ -328,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         attempts=args.attempts,
         reuse_window=args.reuse_window,
         notify=not args.no_notify,
+        grounder=args.grounder,
     )
 
 

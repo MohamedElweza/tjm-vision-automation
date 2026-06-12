@@ -15,6 +15,8 @@ icon, change the query string. No pre-trained image template required.
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -23,6 +25,8 @@ import cv2
 import numpy as np
 
 from .ocr_engine import TextBox, find_text, read_text
+
+logger = logging.getLogger(__name__)
 
 # Heuristic: Windows desktop icons. The bitmap sits above the label.
 # At 1920x1080 with default icon size, the icon is roughly ~48px tall
@@ -182,13 +186,78 @@ def ground_by_template(
     )
 
 
+def ground_by_screenseeker(
+    image: np.ndarray,
+    label: str,
+) -> GroundingResult:
+    """VLM grounding via the ScreenSeekeR algorithm (arXiv:2504.07981).
+
+    Implemented in `screenseeker.py` using Claude Sonnet 4.6 as both planner and
+    grounder. The planner decomposes the screen, the grounder localises in a crop,
+    and a result-checker verifies before committing — this lets the pipeline see
+    *around* pop-ups and unfamiliar themes that defeat OCR and template matching.
+    """
+    try:
+        from .screenseeker import ScreenSeekeR
+        seeker = ScreenSeekeR()
+    except Exception as e:
+        return GroundingResult(
+            found=False,
+            method="screenseeker",
+            reason=f"ScreenSeekeR unavailable: {e}",
+        )
+
+    result = seeker.search(image, f"the {label} desktop icon")
+    if not result.found:
+        return GroundingResult(
+            found=False,
+            method="screenseeker",
+            reason=result.reason or "ScreenSeekeR could not locate target.",
+        )
+    return GroundingResult(
+        found=True,
+        center=result.center,
+        bbox=result.bbox,
+        method="screenseeker",
+        confidence=result.confidence,
+        reason=result.reason or "ScreenSeekeR matched.",
+    )
+
+
 def ground_icon(
     image: np.ndarray,
     label: str,
     template_path: Optional[str | Path] = None,
     min_confidence: float = 0.3,
+    grounder: str = "auto",
 ) -> GroundingResult:
-    """Top-level grounding: try OCR label, then template fallback."""
+    """Top-level grounding cascade.
+
+    Strategies in order:
+      1. ScreenSeekeR (VLM, paper-based) — most flexible, handles unknown pop-ups.
+      2. OCR label match — fast, offline.
+      3. OpenCV template fallback — only if a template was provided.
+
+    `grounder` controls which strategies run:
+      - "screenseeker": only the VLM path.
+      - "ocr": only the OCR + template path (skip the VLM).
+      - "auto" (default): try VLM if ANTHROPIC_API_KEY is set, then fall back to OCR.
+    """
+    chosen = grounder.lower()
+    use_vlm = chosen == "screenseeker" or (
+        chosen == "auto" and os.environ.get("ANTHROPIC_API_KEY")
+    )
+
+    vlm_reason = ""
+    if use_vlm:
+        ss = ground_by_screenseeker(image, label)
+        if ss.found:
+            return ss
+        vlm_reason = ss.reason
+        if chosen == "screenseeker":
+            return ss  # explicit choice: don't silently fall through
+        logger.info("ScreenSeekeR failed (%s); falling back to OCR.", ss.reason)
+
     result = ground_by_label(image, label, min_confidence=min_confidence)
     if result.found:
         return result
@@ -200,6 +269,8 @@ def ground_icon(
             return fallback
 
     result.reason = result.reason or "All grounding methods failed."
+    if vlm_reason:
+        result.reason = f"{result.reason} (VLM also failed: {vlm_reason})"
     return result
 
 

@@ -111,43 +111,68 @@ If the API isn't reachable, the script falls back to `Offline title N` stubs so 
 
 ## How the grounding works
 
-This is the part the assessment cares about. The code uses **OCR labels**, not template images, so it generalises to any icon you can name.
+This is the part the assessment cares about. The repo ships **three grounding strategies** that the workflow cascades through, from most flexible to most deterministic.
+
+### 1. ScreenSeekeR (primary, paper-based)
+
+Implements [arXiv:2504.07981 — *ScreenSpot-Pro: GUI Grounding for Professional High-Resolution Computer Use*](https://arxiv.org/pdf/2504.07981) (Li et al., 2025). The paper's key insight: single-pass VLM grounding scores only 18.9 % on professional GUIs, but a cascaded **planner → grounder → verify** loop that recursively narrows the search region pushes accuracy to 48.1 % — without retraining anything.
 
 ```
-                Screenshot
-                    │
-                    ▼
-      ┌─────────────────────────────┐
-      │  EasyOCR reads all text     │
-      │  on the desktop             │
-      └─────────────┬───────────────┘
-                    │
-                    ▼
-      ┌─────────────────────────────┐
-      │  Find boxes matching        │
-      │  "Notepad" (case-insensitive)│
-      └─────────────┬───────────────┘
-                    │
-                    ▼
-      ┌─────────────────────────────┐
-      │  Prefer exact match over    │
-      │  substring (rejects         │
-      │  "Notepad++", "notepad_*")  │
-      └─────────────┬───────────────┘
-                    │
-                    ▼
-      ┌─────────────────────────────┐
-      │  Icon center = label center │
-      │  shifted up by ~40 pixels   │
-      │  (icon image sits above     │
-      │  the label on Windows)      │
-      └─────────────┬───────────────┘
-                    │
-                    ▼
-                Click here.
+                Screenshot + "the Notepad desktop icon"
+                                │
+                                ▼
+                ┌───────────────────────────────┐
+                │ Planner (VLM)                 │
+                │ "Where could this be?"        │
+                │ -> 1-5 candidate regions      │
+                │    ordered by probability     │
+                └────────────────┬──────────────┘
+                                 │
+                                 ▼
+                ┌───────────────────────────────┐
+                │ Score + NMS                   │
+                │ drop overlapping candidates   │
+                └────────────────┬──────────────┘
+                                 │
+                                 ▼
+                ┌───────────────────────────────┐
+                │ For each candidate (top-down):│
+                │   Crop region -> recurse,     │
+                │   then verify the leaf hit    │
+                │   with a Result-Check call.   │
+                │ Bottom out when patch is      │
+                │ small enough -> Grounder      │
+                │ returns the precise bbox.     │
+                └────────────────┬──────────────┘
+                                 │
+                                 ▼
+                          Click here.
 ```
 
-If OCR fails — for example on a non-English Windows install — the grounder falls back to OpenCV template matching against an optional reference image you can capture with `uv run tjm-capture-template`.
+The paper uses GPT-4o as planner and OS-Atlas-7B as grounder. This implementation uses **Claude Sonnet 4.6** for both roles (running OS-Atlas locally needs a GPU not available in the assessment runtime). The decomposition is identical — see [src/tjm_automation/screenseeker.py](src/tjm_automation/screenseeker.py).
+
+**Why this is more flexible than OCR:** the planner can reason *around* unknown pop-ups, dark themes, non-English labels, and icons whose text label is hidden. The reviewer asked specifically for a grounder that bypasses unexpected pop-ups without knowing them in advance — this loop does that because the planner explicitly treats popups as obstacles and looks elsewhere.
+
+**Enabling it:** set `ANTHROPIC_API_KEY` in your environment. The workflow auto-detects it and uses ScreenSeekeR as the primary strategy; without a key it transparently falls back to OCR.
+
+```powershell
+$env:ANTHROPIC_API_KEY = "your-key"
+uv run tjm-run --reuse-window --grounder screenseeker
+```
+
+`--grounder` accepts `auto` (default — VLM if a key is set, else OCR), `screenseeker` (force VLM), or `ocr` (skip VLM entirely).
+
+### 2. OCR label match (fast, offline fallback)
+
+```
+Screenshot -> EasyOCR -> find "Notepad" text box -> click 40 px above its centre
+```
+
+Runs locally in ~8-10 s. Generalises to any labeled icon by name. Fails on hidden labels, occluding popups, or non-English desktops.
+
+### 3. OpenCV template matching (last resort)
+
+A tiny `.png` of the icon image, captured once via `uv run tjm-capture-template`, matched against the screen. Fast but brittle to theme / DPI / wallpaper changes. Used only when both VLM and OCR fail and a template was provided.
 
 ## Project layout
 
@@ -159,7 +184,8 @@ tjm-vision-automation/
 │   ├── main.py                  ← tjm-run: full workflow
 │   ├── demo.py                  ← tjm-demo: annotated screenshot
 │   ├── capture_template.py      ← tjm-capture-template: seed fallback image
-│   ├── grounding.py             ← OCR label grounding + template fallback
+│   ├── grounding.py             ← cascade: ScreenSeekeR → OCR → template
+│   ├── screenseeker.py          ← ScreenSeekeR paper implementation
 │   ├── ocr_engine.py            ← EasyOCR wrapper
 │   ├── screen.py                ← screenshot + show-desktop helpers
 │   ├── notepad.py               ← type / save-as / close primitives
